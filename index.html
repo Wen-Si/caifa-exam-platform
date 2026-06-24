@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAIFA Exam Platform</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Navigation -->
+        <nav class="navbar" id="navbar" style="display:none;">
+            <div class="nav-brand">
+                <span class="logo">CAIFA</span>
+                <span class="logo-sub">Exam Platform</span>
+            </div>
+            <div class="nav-links">
+                <span id="nav-user" class="nav-user"></span>
+                <button id="nav-dashboard" class="nav-btn">Dashboard</button>
+                <button id="nav-logout" class="nav-btn nav-btn-logout">Logout</button>
+            </div>
+        </nav>
+
+        <!-- Auth Page (Login/Register) -->
+        <div id="auth-page" class="page auth-page">
+            <div class="auth-container">
+                <div class="auth-header">
+                    <div class="auth-logo">CAIFA</div>
+                    <h1>Certified AI in Finance Analyst</h1>
+                    <p>Professional Certification Examination Platform</p>
+                </div>
+                <div class="auth-tabs">
+                    <button id="tab-login" class="auth-tab active" onclick="showLogin()">Login</button>
+                    <button id="tab-register" class="auth-tab" onclick="showRegister()">Register</button>
+                </div>
+
+                <!-- Login Form -->
+                <form id="login-form" class="auth-form" onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label for="login-username">Username or Email</label>
+                        <input type="text" id="login-username" required placeholder="Enter your username or email">
+                    </div>
+                    <div class="form-group">
+                        <label for="login-password">Password</label>
+                        <input type="password" id="login-password" required placeholder="Enter your password">
+                    </div>
+                    <div id="login-error" class="error-msg"></div>
+                    <button type="submit" class="btn btn-primary btn-full">Login</button>
+                </form>
+
+                <!-- Register Form -->
+                <form id="register-form" class="auth-form" style="display:none;" onsubmit="handleRegister(event)">
+                    <div class="form-group">
+                        <label for="reg-fullname">Full Name</label>
+                        <input type="text" id="reg-fullname" required placeholder="Enter your full name">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-username">Username</label>
+                        <input type="text" id="reg-username" required placeholder="Choose a username" pattern="[a-zA-Z0-9_]{3,20}" title="3-20 characters, letters, numbers, underscores only">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-email">Email</label>
+                        <input type="email" id="reg-email" required placeholder="Enter your email address">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-password">Password</label>
+                        <input type="password" id="reg-password" required placeholder="Create a password (min 6 characters)" minlength="6">
+                    </div>
+                    <div class="form-group">
+                        <label for="reg-confirm">Confirm Password</label>
+                        <input type="password" id="reg-confirm" required placeholder="Confirm your password" minlength="6">
+                    </div>
+                    <div id="register-error" class="error-msg"></div>
+                    <div id="register-success" class="success-msg"></div>
+                    <button type="submit" class="btn btn-primary btn-full">Create Account</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Dashboard Page -->
+        <div id="dashboard-page" class="page" style="display:none;">
+            <div class="container">
+                <div class="dashboard-header">
+                    <h1>Welcome, <span id="dash-name"></span>!</h1>
+                    <p>Prepare for your CAIFA certification with our comprehensive exam platform</p>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-icon">&#128218;</div>
+                        <div class="stat-number">3,000</div>
+                        <div class="stat-label">Total Questions</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">&#128221;</div>
+                        <div class="stat-number">6</div>
+                        <div class="stat-label">Modules Covered</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">&#9203;</div>
+                        <div class="stat-number">100</div>
+                        <div class="stat-label">Questions per Exam</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-icon">&#127942;</div>
+                        <div class="stat-number" id="dash-attempts">0</div>
+                        <div class="stat-label">Exams Taken</div>
+                    </div>
+                </div>
+
+                <div class="exam-section">
+                    <div class="card">
+                        <h2>Start a New Exam</h2>
+                        <p>Each exam contains <strong>100 randomly selected questions</strong> from all 6 CAIFA modules. You will have <strong>120 minutes</strong> to complete the exam. Your score will be displayed upon submission.</p>
+                        <div class="exam-rules">
+                            <h3>Exam Rules:</h3>
+                            <ul>
+                                <li>100 multiple-choice questions per attempt</li>
+                                <li>Time limit: 120 minutes (2 hours)</li>
+                                <li>Questions are randomly selected from a pool of 3,000</li>
+                                <li>One point awarded per correct answer</li>
+                                <li>No answer key is provided after the exam</li>
+                                <li>You may retake the exam as many times as you wish</li>
+                            </ul>
+                        </div>
+                        <button id="start-exam-btn" class="btn btn-primary btn-large" onclick="startExam()">Start Exam</button>
+                    </div>
+                </div>
+
+                <div class="history-section">
+                    <div class="card">
+                        <h2>Your Exam History</h2>
+                        <div id="history-list" class="history-list">
+                            <p class="empty-history">No exams taken yet. Start your first exam above!</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Exam Page -->
+        <div id="exam-page" class="page" style="display:none;">
+            <div class="exam-header-bar">
+                <div class="exam-timer">
+                    <span class="timer-icon">&#9203;</span>
+                    <span id="timer-display">120:00</span>
+                </div>
+                <div class="exam-progress-text">
+                    Question <span id="current-q-num">1</span> of 100
+                </div>
+                <button id="submit-exam-btn" class="btn btn-danger" onclick="confirmSubmit()">Submit Exam</button>
+            </div>
+
+            <div class="exam-container">
+                <div class="question-nav" id="question-nav">
+                    <!-- Question number buttons will be inserted here -->
+                </div>
+
+                <div class="question-area">
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" id="progress-bar" style="width: 1%"></div>
+                    </div>
+
+                    <div id="question-display" class="question-display">
+                        <!-- Question content will be inserted here -->
+                    </div>
+
+                    <div class="question-nav-buttons">
+                        <button id="prev-btn" class="btn btn-secondary" onclick="prevQuestion()" disabled>&#8592; Previous</button>
+                        <button id="next-btn" class="btn btn-primary" onclick="nextQuestion()">Next &#8594;</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Results Page -->
+        <div id="results-page" class="page" style="display:none;">
+            <div class="container">
+                <div class="results-container">
+                    <div id="result-badge" class="result-badge">
+                        <div class="result-score-circle">
+                            <span id="result-score">0</span>
+                            <span class="score-total">/100</span>
+                        </div>
+                    </div>
+                    <h1 id="result-title">Exam Completed</h1>
+                    <p id="result-message" class="result-message"></p>
+
+                    <div class="result-details">
+                        <div class="result-detail-item">
+                            <span class="detail-label">Correct Answers:</span>
+                            <span id="result-correct" class="detail-value">0</span>
+                        </div>
+                        <div class="result-detail-item">
+                            <span class="detail-label">Incorrect/Unanswered:</span>
+                            <span id="result-incorrect" class="detail-value">0</span>
+                        </div>
+                        <div class="result-detail-item">
+                            <span class="detail-label">Percentage:</span>
+                            <span id="result-percent" class="detail-value">0%</span>
+                        </div>
+                        <div class="result-detail-item">
+                            <span class="detail-label">Time Taken:</span>
+                            <span id="result-time" class="detail-value">0:00</span>
+                        </div>
+                        <div class="result-detail-item">
+                            <span class="detail-label">Date:</span>
+                            <span id="result-date" class="detail-value"></span>
+                        </div>
+                    </div>
+
+                    <div class="result-actions">
+                        <button class="btn btn-primary btn-large" onclick="startExam()">Take Another Exam</button>
+                        <button class="btn btn-secondary btn-large" onclick="goToDashboard()">Back to Dashboard</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Confirmation Modal -->
+        <div id="modal-overlay" class="modal-overlay" style="display:none;">
+            <div class="modal">
+                <h3 id="modal-title">Confirm Submission</h3>
+                <p id="modal-message">Are you sure you want to submit your exam? You cannot change your answers after submission.</p>
+                <div id="modal-unanswered" class="modal-warning"></div>
+                <div class="modal-actions">
+                    <button id="modal-cancel" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button id="modal-confirm" class="btn btn-danger" onclick="submitExam()">Submit Exam</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="questions.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
