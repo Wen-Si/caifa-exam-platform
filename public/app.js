@@ -495,26 +495,33 @@ Certified AI in Finance Analyst`;
   </div>
 </div></body></html>`;
 
-    // Method 1: Try Netlify serverless function first (if deployed)
-    try {
-        const response = await fetch('/.netlify/functions/send-result', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                name: candidateName, email: candidateEmail, score: score,
-                totalQuestions: 100, timeTaken: timeStr, examDate: examDate, percentage: pct
-            })
-        });
-        if (response.ok) {
-            const result = await response.json();
-            if (result.success) {
-                console.log('Exam result email sent via serverless function.');
-                return;
+    // Method 1: Try serverless functions (Netlify or Vercel)
+    const serverlessEndpoints = [
+        '/.netlify/functions/send-result',
+        '/api/send-result'
+    ];
+    for (const endpoint of serverlessEndpoints) {
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: candidateName, email: candidateEmail, score: score,
+                    totalQuestions: 100, timeTaken: timeStr, examDate: examDate, percentage: pct
+                })
+            });
+            if (response.ok) {
+                const result = await response.json();
+                if (result.success) {
+                    console.log(`Exam result email sent via ${endpoint}.`);
+                    return;
+                }
             }
+        } catch (e) {
+            // try next endpoint
         }
-    } catch (e) {
-        console.log('Serverless function not available, trying FormSubmit...');
     }
+    console.log('Serverless functions not available, using FormSubmit...');
 
     // Method 2: FormSubmit.co AJAX API (browser-based, no backend required)
     // Sends email to siwen1980@126.com via formsubmit.co service
