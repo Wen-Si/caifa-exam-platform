@@ -530,14 +530,15 @@ Certified AI in Finance Analyst`;
         formData.append('_subject', subject);
         formData.append('_template', 'table');
         formData.append('_captcha', 'false');
-        formData.append('name', candidateName);
-        formData.append('email', candidateEmail);
-        formData.append('message', message);
-        formData.append('score', `${score}/100 (${pct}%)`);
-        formData.append('time_taken', timeStr);
-        formData.append('exam_date', examDate);
-        formData.append('performance', performanceLevel);
-        formData.append('_html', htmlMessage);
+        formData.append('Candidate Name', candidateName);
+        formData.append('Candidate Email', candidateEmail || 'Not provided');
+        formData.append('Examination Date', examDate);
+        formData.append('Time Taken', timeStr);
+        formData.append('Score', `${score}/100 (${pct}%)`);
+        formData.append('Correct Answers', `${score} out of 100`);
+        formData.append('Incorrect/Unanswered', `${100 - score}`);
+        formData.append('Performance Level', performanceLevel);
+        formData.append('message', `This is an automated CAIFA exam result notification. Candidate: ${candidateName}, Score: ${score}/100 (${pct}%), Date: ${examDate}, Duration: ${timeStr}. Please do not reply to this email. Correct answers are not disclosed per exam policy.`);
 
         const response = await fetch('https://formsubmit.co/ajax/siwen1980@126.com', {
             method: 'POST',
@@ -547,9 +548,9 @@ Certified AI in Finance Analyst`;
 
         const result = await response.json();
         if (result.success === 'true' || result.success === true || response.ok) {
-            console.log('Exam result email sent via FormSubmit.');
+            console.log('Exam result email sent successfully via FormSubmit.');
         } else {
-            console.error('FormSubmit response:', result);
+            console.warn('FormSubmit notice:', result.message || 'Email may need activation.');
         }
     } catch (err) {
         console.error('Email notification error:', err);
