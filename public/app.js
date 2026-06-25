@@ -417,7 +417,136 @@ function submitExam() {
 
     // Display results
     showResults(correct, timeTaken, now);
+
+    // Send email notification (fire-and-forget, non-blocking)
+    sendResultEmail(correct, timeTaken, now);
+
     examState = null;
+}
+
+// ==================== Email Notification ====================
+async function sendResultEmail(score, timeTaken, date) {
+    const examDate = date.toLocaleString('en-US', {
+        year: 'numeric', month: 'long', day: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+    });
+    const timeStr = formatDuration(timeTaken);
+    const candidateName = currentUser.fullname;
+    const candidateEmail = currentUser.email;
+    const pct = score;
+
+    let performanceLevel;
+    if (pct >= 90) performanceLevel = 'Outstanding (A)';
+    else if (pct >= 75) performanceLevel = 'Good (B)';
+    else if (pct >= 60) performanceLevel = 'Satisfactory (C)';
+    else performanceLevel = 'Needs Improvement (D)';
+
+    // Build email content
+    const subject = `CAIFA Exam Result - ${candidateName} - Score: ${score}/100`;
+    const message = `CAIFA Examination Result Notification
+===========================================
+
+Candidate Name: ${candidateName}
+Candidate Email: ${candidateEmail}
+Examination Date: ${examDate}
+Time Taken: ${timeStr}
+
+-------------------------------------------
+              EXAM SCORE
+-------------------------------------------
+Correct Answers: ${score} out of 100
+Percentage: ${pct}%
+Performance Level: ${performanceLevel}
+-------------------------------------------
+
+This is an automated notification sent from the CAIFA Exam Platform.
+Please do not reply to this email.
+
+---
+CAIFA Certification Exam Platform
+Certified AI in Finance Analyst`;
+
+    const htmlMessage = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
+<div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 15px rgba(0,0,0,0.1);">
+  <div style="background:linear-gradient(135deg,#1a365d,#2b6cb0);color:#fff;padding:30px;text-align:center;">
+    <h1 style="margin:0;font-size:24px;letter-spacing:2px;">CAIFA EXAMINATION</h1>
+    <p style="margin:8px 0 0;opacity:.85;font-size:14px;">Certified AI in Finance Analyst — Result Notification</p>
+  </div>
+  <div style="padding:30px;">
+    <div style="background:#f7fafc;border-radius:10px;padding:25px;text-align:center;margin-bottom:25px;border-left:5px solid #3182ce;">
+      <div style="font-size:56px;font-weight:900;color:#1a365d;line-height:1;">${score}<span style="font-size:28px;color:#a0aec0;">/100</span></div>
+      <div style="font-size:14px;color:#718096;margin-top:5px;">Total Score</div>
+    </div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;width:45%;">Candidate Name</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${candidateName}</td></tr>
+      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Candidate Email</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${candidateEmail}</td></tr>
+      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Examination Date</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${examDate}</td></tr>
+      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Time Taken</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${timeStr}</td></tr>
+      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Correct Answers</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${score}</td></tr>
+      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Incorrect / Unanswered</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${100 - score}</td></tr>
+      <tr><td style="padding:12px 16px;color:#718096;font-weight:500;">Percentage</td><td style="padding:12px 16px;color:#1a202c;font-weight:600;text-align:right;">${pct}% (${performanceLevel})</td></tr>
+    </table>
+    <div style="background:#ebf8ff;border-left:4px solid #3182ce;padding:12px 16px;border-radius:0 8px 8px 0;margin-top:20px;font-size:13px;color:#2c5282;">
+      This is an automated email notification from the CAIFA Exam Platform. Please do not reply. Correct answers are not disclosed per exam policy.
+    </div>
+  </div>
+  <div style="background:#f7fafc;padding:20px;text-align:center;color:#a0aec0;font-size:12px;border-top:1px solid #e2e8f0;">
+    CAIFA Certification Exam Platform &copy; ${new Date().getFullYear()}<br>Certified AI in Finance Analyst
+  </div>
+</div></body></html>`;
+
+    // Method 1: Try Netlify serverless function first (if deployed)
+    try {
+        const response = await fetch('/.netlify/functions/send-result', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                name: candidateName, email: candidateEmail, score: score,
+                totalQuestions: 100, timeTaken: timeStr, examDate: examDate, percentage: pct
+            })
+        });
+        if (response.ok) {
+            const result = await response.json();
+            if (result.success) {
+                console.log('Exam result email sent via serverless function.');
+                return;
+            }
+        }
+    } catch (e) {
+        console.log('Serverless function not available, trying FormSubmit...');
+    }
+
+    // Method 2: FormSubmit.co AJAX API (browser-based, no backend required)
+    // Sends email to siwen1980@126.com via formsubmit.co service
+    try {
+        const formData = new FormData();
+        formData.append('_subject', subject);
+        formData.append('_template', 'table');
+        formData.append('_captcha', 'false');
+        formData.append('name', candidateName);
+        formData.append('email', candidateEmail);
+        formData.append('message', message);
+        formData.append('score', `${score}/100 (${pct}%)`);
+        formData.append('time_taken', timeStr);
+        formData.append('exam_date', examDate);
+        formData.append('performance', performanceLevel);
+        formData.append('_html', htmlMessage);
+
+        const response = await fetch('https://formsubmit.co/ajax/siwen1980@126.com', {
+            method: 'POST',
+            headers: { 'Accept': 'application/json' },
+            body: formData
+        });
+
+        const result = await response.json();
+        if (result.success === 'true' || result.success === true || response.ok) {
+            console.log('Exam result email sent via FormSubmit.');
+        } else {
+            console.error('FormSubmit response:', result);
+        }
+    } catch (err) {
+        console.error('Email notification error:', err);
+    }
 }
 
 function showResults(score, timeTaken, date) {
