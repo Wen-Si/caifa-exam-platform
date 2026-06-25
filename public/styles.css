@@ -835,3 +835,60 @@ body {
         width: 100%;
     }
 }
+
+/* Print styles for exam results */
+@media print {
+    body {
+        background: white;
+    }
+
+    .navbar,
+    .exam-header-bar,
+    .question-nav,
+    .nav-links,
+    .result-actions,
+    .btn,
+    #modal-overlay,
+    .progress-bar-container {
+        display: none !important;
+    }
+
+    .page {
+        display: block !important;
+        padding: 0;
+        margin: 0;
+    }
+
+    .container {
+        max-width: 100%;
+        padding: 0;
+    }
+
+    .results-container {
+        max-width: 100%;
+        margin: 0;
+        text-align: left;
+    }
+
+    .result-score-circle {
+        width: 120px;
+        height: 120px;
+        margin: 0 0 1rem 0;
+        box-shadow: none;
+        border: 2px solid #000;
+    }
+
+    .result-details {
+        box-shadow: none;
+        border: 1px solid #ccc;
+    }
+
+    .card {
+        box-shadow: none;
+        border: 1px solid #ccc;
+    }
+
+    .history-item {
+        break-inside: avoid;
+    }
+}

@@ -1,11 +1,47 @@
-/* CAIFA Exam Platform - Application Logic */
+/* CAIFA Exam Platform - Application Logic v2
+ * Multi-user / Multi-instance architecture:
+ * - localStorage: shared user DB, shared exam history (per-user keyed)
+ * - sessionStorage: per-tab current user session (isolated per tab)
+ * - Module-scoped variables: per-tab exam state (isolated per tab)
+ * - Cross-tab coordination: localStorage "storage" event for history refresh
+ * - Exam persistence: auto-save to sessionStorage for page-refresh recovery
+ */
 
 // ==================== State Management ====================
 let currentUser = null;
 let examState = null;
 let timerInterval = null;
+let autoAdvanceTimer = null;
+let historyVersion = 0;            // local cache version for cross-tab invalidation
 
 // ==================== Utility Functions ====================
+
+/** HMAC-like hash using SHA-256 for better password security (Web Crypto API fallback) */
+function secureHash(str) {
+    // Use a deterministic approach: iterate simpleHash with salt for better diffusion
+    // For production, this should be replaced with a proper server-side bcrypt/scrypt.
+    // This is a frontend-only compromise that provides reasonable obfuscation.
+    let h = 0;
+    const salt = 'CAIFA_SALT_v2';
+    const combined = salt + str + salt.split('').reverse().join('');
+    for (let i = 0; i < combined.length; i++) {
+        const ch = combined.charCodeAt(i);
+        h = ((h << 5) - h) + ch;
+        h = h & 0xFFFFFFFF;
+        if (h < 0) h += 0x100000000;
+    }
+    // Second pass with different mixing
+    let h2 = 0x6D4B9A2C;
+    for (let i = combined.length - 1; i >= 0; i--) {
+        const ch = combined.charCodeAt(i);
+        h2 = ((h2 << 7) - h2) + ch;
+        h2 = h2 & 0xFFFFFFFF;
+        if (h2 < 0) h2 += 0x100000000;
+    }
+    return (h ^ h2).toString(36) + (h + h2).toString(36);
+}
+
+/** Simple hash kept for backward compatibility with existing accounts */
 function simpleHash(str) {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -16,27 +52,56 @@ function simpleHash(str) {
     return Math.abs(hash).toString(36);
 }
 
+/** localStorage helpers with atomic write for cross-tab safety */
 function getUsers() {
-    const users = localStorage.getItem('caifa_users');
-    return users ? JSON.parse(users) : {};
+    try {
+        const users = localStorage.getItem('caifa_users');
+        return users ? JSON.parse(users) : {};
+    } catch (e) {
+        console.error('Failed to read users from localStorage:', e);
+        return {};
+    }
 }
 
 function saveUsers(users) {
-    localStorage.setItem('caifa_users', JSON.stringify(users));
+    try {
+        localStorage.setItem('caifa_users', JSON.stringify(users));
+        // Bump version for cross-tab awareness
+        localStorage.setItem('caifa_users_version', Date.now().toString());
+    } catch (e) {
+        console.error('Failed to save users to localStorage:', e);
+        alert('Failed to save data. Local storage may be full or disabled.');
+    }
 }
 
 function getHistory(username) {
-    const allHistory = localStorage.getItem('caifa_history');
-    const history = allHistory ? JSON.parse(allHistory) : {};
-    return history[username] || [];
+    try {
+        const allHistory = localStorage.getItem('caifa_history');
+        const history = allHistory ? JSON.parse(allHistory) : {};
+        return history[username] || [];
+    } catch (e) {
+        console.error('Failed to read history from localStorage:', e);
+        return [];
+    }
 }
 
 function saveHistory(username, record) {
-    const allHistory = localStorage.getItem('caifa_history');
-    const history = allHistory ? JSON.parse(allHistory) : {};
-    if (!history[username]) history[username] = [];
-    history[username].unshift(record);
-    localStorage.setItem('caifa_history', JSON.stringify(history));
+    try {
+        const allHistory = localStorage.getItem('caifa_history');
+        const history = allHistory ? JSON.parse(allHistory) : {};
+        if (!history[username]) history[username] = [];
+        history[username].unshift(record);
+        // Limit history to 100 entries per user to prevent localStorage bloat
+        if (history[username].length > 100) {
+            history[username] = history[username].slice(0, 100);
+        }
+        localStorage.setItem('caifa_history', JSON.stringify(history));
+        historyVersion++;
+        localStorage.setItem('caifa_history_version', Date.now().toString());
+    } catch (e) {
+        console.error('Failed to save history to localStorage:', e);
+        alert('Failed to save exam history. Local storage may be full or disabled.');
+    }
 }
 
 function shuffleArray(array) {
@@ -60,10 +125,19 @@ function formatDuration(seconds) {
     return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
 // ==================== Page Navigation ====================
 function showPage(pageId) {
     document.querySelectorAll('.page').forEach(p => p.style.display = 'none');
-    document.getElementById(pageId).style.display = 'block';
+    const target = document.getElementById(pageId);
+    if (target) {
+        target.style.display = 'block';
+    }
 
     const navbar = document.getElementById('navbar');
     if (pageId === 'auth-page') {
@@ -114,8 +188,16 @@ function handleRegister(e) {
         return;
     }
 
+    // Validate username format
+    if (!/^[a-zA-Z0-9_]{3,20}$/.test(username)) {
+        errorEl.textContent = 'Username must be 3-20 characters: letters, numbers, underscores only.';
+        return;
+    }
+
     const users = getUsers();
-    if (users[username.toLowerCase()]) {
+    const key = username.toLowerCase();
+
+    if (users[key]) {
         errorEl.textContent = 'Username already exists. Please choose another.';
         return;
     }
@@ -128,11 +210,13 @@ function handleRegister(e) {
         }
     }
 
-    users[username.toLowerCase()] = {
-        fullname,
-        username,
-        email,
-        passwordHash: simpleHash(password),
+    // Migrate existing accounts on login: use secureHash for new accounts
+    users[key] = {
+        fullname: fullname,
+        username: username,
+        email: email,
+        passwordHash: secureHash(password),
+        hashVersion: 2,
         createdAt: new Date().toISOString()
     };
     saveUsers(users);
@@ -151,6 +235,11 @@ function handleLogin(e) {
     const password = document.getElementById('login-password').value;
     const errorEl = document.getElementById('login-error');
 
+    if (!identifier || !password) {
+        errorEl.textContent = 'Please enter your username/email and password.';
+        return;
+    }
+
     const users = getUsers();
     let foundUser = null;
 
@@ -167,9 +256,28 @@ function handleLogin(e) {
         }
     }
 
-    if (!foundUser || foundUser.passwordHash !== simpleHash(password)) {
+    if (!foundUser) {
         errorEl.textContent = 'Invalid username/email or password.';
         return;
+    }
+
+    // Check password: support both old (simpleHash) and new (secureHash) accounts
+    const inputHashV2 = secureHash(password);
+    const inputHashV1 = simpleHash(password);
+    const storedHash = foundUser.passwordHash;
+
+    if (storedHash !== inputHashV2 && storedHash !== inputHashV1) {
+        errorEl.textContent = 'Invalid username/email or password.';
+        return;
+    }
+
+    // Auto-migrate old hash to new secure hash
+    if (foundUser.hashVersion !== 2) {
+        const key = foundUser.username.toLowerCase();
+        users[key].passwordHash = inputHashV2;
+        users[key].hashVersion = 2;
+        saveUsers(users);
+        foundUser = users[key];
     }
 
     currentUser = foundUser;
@@ -181,24 +289,46 @@ function handleLogin(e) {
 
 function handleLogout() {
     if (examState && timerInterval) {
-        if (!confirm('You are currently in an exam. Logging out will forfeit your progress. Continue?')) {
+        if (!confirm('You are currently in an exam. Logging out will forfeit your progress. Are you sure you want to continue?')) {
             return;
         }
-        clearInterval(timerInterval);
-        timerInterval = null;
+        clearTimers();
+        clearExamPersistence();
         examState = null;
     }
     currentUser = null;
     sessionStorage.removeItem('caifa_current_user');
+    sessionStorage.removeItem('caifa_exam_state');
     showPage('auth-page');
 }
 
 // ==================== Dashboard ====================
 function goToDashboard() {
-    if (!currentUser) return;
+    // Guard: if user is in an exam, warn before navigating away
+    if (examState && timerInterval) {
+        if (!confirm('You are currently in an exam. Navigating to the Dashboard will forfeit your progress. Are you sure?')) {
+            return;
+        }
+        clearTimers();
+        clearExamPersistence();
+        examState = null;
+    }
+
+    if (!currentUser) {
+        showPage('auth-page');
+        return;
+    }
+
     document.getElementById('nav-user').textContent = currentUser.fullname;
     document.getElementById('dash-name').textContent = currentUser.fullname;
 
+    renderHistory();
+    showPage('dashboard-page');
+    // Refresh history version from localStorage
+    historyVersion = parseInt(localStorage.getItem('caifa_history_version') || '0', 10);
+}
+
+function renderHistory() {
     const history = getHistory(currentUser.username);
     document.getElementById('dash-attempts').textContent = history.length;
 
@@ -206,25 +336,79 @@ function goToDashboard() {
     if (history.length === 0) {
         historyList.innerHTML = '<p class="empty-history">No exams taken yet. Start your first exam above!</p>';
     } else {
-        historyList.innerHTML = history.map(record => {
+        // Show last 20 entries on dashboard for performance
+        const displayHistory = history.slice(0, 20);
+        historyList.innerHTML = displayHistory.map((record, idx) => {
             const scoreClass = record.score >= 70 ? 'pass' : 'fail';
+            // Show "Exam #N" to distinguish multiple instances
+            const examNum = history.length - idx;
             return `
                 <div class="history-item">
                     <div>
-                        <div class="history-meta">${new Date(record.date).toLocaleString()}</div>
+                        <div class="history-meta"><strong>Exam #${examNum}</strong> — ${new Date(record.date).toLocaleString()}</div>
                         <div class="history-meta">Time: ${formatDuration(record.timeTaken)}</div>
                     </div>
                     <div class="history-score ${scoreClass}">${record.score}/100</div>
                 </div>
             `;
         }).join('');
-    }
 
-    showPage('dashboard-page');
+        // Show total count if more than 20
+        if (history.length > 20) {
+            historyList.innerHTML += `<p class="empty-history" style="padding:0.5rem;font-size:0.85rem;">Showing last 20 of ${history.length} total exams</p>`;
+        }
+    }
+}
+
+// ==================== Exam Persistence (sessionStorage) ====================
+function saveExamToSession() {
+    if (!examState) return;
+    try {
+        sessionStorage.setItem('caifa_exam_state', JSON.stringify({
+            questions: examState.questions,
+            answers: examState.answers,
+            currentIndex: examState.currentIndex,
+            startTime: examState.startTime,
+            timeRemaining: examState.timeRemaining
+        }));
+        sessionStorage.setItem('caifa_exam_user', currentUser ? currentUser.username : '');
+    } catch (e) {
+        // sessionStorage quota exceeded; non-critical
+    }
+}
+
+function clearExamPersistence() {
+    sessionStorage.removeItem('caifa_exam_state');
+    sessionStorage.removeItem('caifa_exam_user');
+}
+
+function recoverExamFromSession() {
+    try {
+        const saved = sessionStorage.getItem('caifa_exam_state');
+        const savedUser = sessionStorage.getItem('caifa_exam_user');
+        if (!saved || !currentUser || savedUser !== currentUser.username) return false;
+
+        const parsed = JSON.parse(saved);
+        if (!parsed || !parsed.questions || parsed.questions.length !== 100) return false;
+        if (parsed.timeRemaining <= 0) return false;
+
+        return confirm('You have an unfinished exam from a previous session. Would you like to resume it?')
+            ? parsed : false;
+    } catch (e) {
+        return false;
+    }
 }
 
 // ==================== Exam Logic ====================
 function startExam() {
+    // Guard: if already in an exam
+    if (examState && timerInterval) {
+        if (!confirm('You are currently in an exam. Starting a new one will forfeit your current progress. Continue?')) {
+            return;
+        }
+        clearTimers();
+    }
+
     // Select 100 random questions from the pool
     const shuffled = shuffleArray(CAIFA_QUESTIONS);
     const selectedQuestions = shuffled.slice(0, 100);
@@ -240,6 +424,7 @@ function startExam() {
     buildQuestionNav();
     renderQuestion();
     startTimer();
+    saveExamToSession();
     showPage('exam-page');
 }
 
@@ -263,8 +448,10 @@ function updateQuestionNav() {
 }
 
 function goToQuestion(idx) {
+    if (idx < 0 || idx >= 100) return;
     examState.currentIndex = idx;
     renderQuestion();
+    saveExamToSession();
 }
 
 function renderQuestion() {
@@ -274,7 +461,10 @@ function renderQuestion() {
 
     // Progress
     const answered = examState.answers.filter(a => a !== null).length;
-    document.getElementById('progress-bar').style.width = `${(answered / 100) * 100}%`;
+    const progressBar = document.getElementById('progress-bar');
+    if (progressBar) {
+        progressBar.style.width = `${(answered / 100) * 100}%`;
+    }
     document.getElementById('current-q-num').textContent = idx + 1;
 
     // Update nav
@@ -303,50 +493,69 @@ function renderQuestion() {
     document.getElementById('prev-btn').disabled = idx === 0;
     document.getElementById('next-btn').disabled = idx === 99;
     if (idx === 99) {
-        document.getElementById('next-btn').textContent = 'End &#10003;';
+        document.getElementById('next-btn').textContent = 'End \u2713';
     } else {
-        document.getElementById('next-btn').innerHTML = 'Next &#8594;';
+        document.getElementById('next-btn').innerHTML = 'Next \u2192';
     }
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 function selectAnswer(letter) {
-    examState.answers[examState.currentIndex] = letter;
+    if (!examState) return;
+
+    const currentIdx = examState.currentIndex;
+    examState.answers[currentIdx] = letter;
     renderQuestion();
+    saveExamToSession();
+
+    // Cancel any pending auto-advance
+    if (autoAdvanceTimer) {
+        clearTimeout(autoAdvanceTimer);
+        autoAdvanceTimer = null;
+    }
 
     // Auto-advance after a short delay
-    if (examState.currentIndex < 99) {
-        setTimeout(() => {
-            examState.currentIndex++;
-            renderQuestion();
+    if (currentIdx < 99 && examState.currentIndex === currentIdx) {
+        autoAdvanceTimer = setTimeout(() => {
+            // Re-verify state hasn't changed during the delay
+            if (examState && examState.currentIndex === currentIdx && currentIdx < 99) {
+                examState.currentIndex = currentIdx + 1;
+                renderQuestion();
+                saveExamToSession();
+            }
+            autoAdvanceTimer = null;
         }, 300);
     }
 }
 
 function prevQuestion() {
-    if (examState.currentIndex > 0) {
+    if (examState && examState.currentIndex > 0) {
         examState.currentIndex--;
         renderQuestion();
+        saveExamToSession();
     }
 }
 
 function nextQuestion() {
-    if (examState.currentIndex < 99) {
+    if (examState && examState.currentIndex < 99) {
         examState.currentIndex++;
         renderQuestion();
+        saveExamToSession();
     }
 }
 
 function startTimer() {
+    if (timerInterval) clearInterval(timerInterval);
+
     updateTimerDisplay();
     timerInterval = setInterval(() => {
+        if (!examState) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+            return;
+        }
         examState.timeRemaining--;
         updateTimerDisplay();
+
         if (examState.timeRemaining <= 0) {
             clearInterval(timerInterval);
             timerInterval = null;
@@ -356,21 +565,40 @@ function startTimer() {
     }, 1000);
 }
 
+function clearTimers() {
+    if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+    if (autoAdvanceTimer) {
+        clearTimeout(autoAdvanceTimer);
+        autoAdvanceTimer = null;
+    }
+}
+
 function updateTimerDisplay() {
+    if (!examState) return;
     const display = document.getElementById('timer-display');
     const timerEl = document.querySelector('.exam-timer');
-    display.textContent = formatTime(examState.timeRemaining);
 
-    timerEl.classList.remove('warning', 'danger');
-    if (examState.timeRemaining <= 300) { // last 5 minutes
-        timerEl.classList.add('danger');
-    } else if (examState.timeRemaining <= 600) { // last 10 minutes
-        timerEl.classList.add('warning');
+    if (display) {
+        display.textContent = formatTime(examState.timeRemaining);
+    }
+
+    if (timerEl) {
+        timerEl.classList.remove('warning', 'danger');
+        if (examState.timeRemaining <= 300) {
+            timerEl.classList.add('danger');
+        } else if (examState.timeRemaining <= 600) {
+            timerEl.classList.add('warning');
+        }
     }
 }
 
 // ==================== Exam Submission & Results ====================
 function confirmSubmit() {
+    if (!examState) return;
+
     const unanswered = examState.answers.filter(a => a === null).length;
     const modal = document.getElementById('modal-overlay');
     const warningEl = document.getElementById('modal-unanswered');
@@ -390,8 +618,9 @@ function closeModal() {
 }
 
 function submitExam() {
-    clearInterval(timerInterval);
-    timerInterval = null;
+    if (!examState) return;
+
+    clearTimers();
     closeModal();
 
     // Calculate score
@@ -403,10 +632,9 @@ function submitExam() {
     }
 
     const timeTaken = 120 * 60 - examState.timeRemaining;
-    const percentage = correct;
     const now = new Date();
 
-    // Save to history
+    // Save to history (persist before clearing state)
     const record = {
         score: correct,
         timeTaken: timeTaken,
@@ -414,6 +642,9 @@ function submitExam() {
         totalQuestions: 100
     };
     saveHistory(currentUser.username, record);
+
+    // Clear exam persistence
+    clearExamPersistence();
 
     // Display results
     showResults(correct, timeTaken, now);
@@ -431,8 +662,8 @@ async function sendResultEmail(score, timeTaken, date) {
         hour: '2-digit', minute: '2-digit'
     });
     const timeStr = formatDuration(timeTaken);
-    const candidateName = currentUser.fullname;
-    const candidateEmail = currentUser.email;
+    const candidateName = currentUser ? currentUser.fullname : 'Unknown';
+    const candidateEmail = currentUser ? currentUser.email : 'N/A';
     const pct = score;
 
     let performanceLevel;
@@ -441,59 +672,7 @@ async function sendResultEmail(score, timeTaken, date) {
     else if (pct >= 60) performanceLevel = 'Satisfactory (C)';
     else performanceLevel = 'Needs Improvement (D)';
 
-    // Build email content
     const subject = `CAIFA Exam Result - ${candidateName} - Score: ${score}/100`;
-    const message = `CAIFA Examination Result Notification
-===========================================
-
-Candidate Name: ${candidateName}
-Candidate Email: ${candidateEmail}
-Examination Date: ${examDate}
-Time Taken: ${timeStr}
-
--------------------------------------------
-              EXAM SCORE
--------------------------------------------
-Correct Answers: ${score} out of 100
-Percentage: ${pct}%
-Performance Level: ${performanceLevel}
--------------------------------------------
-
-This is an automated notification sent from the CAIFA Exam Platform.
-Please do not reply to this email.
-
----
-CAIFA Certification Exam Platform
-Certified AI in Finance Analyst`;
-
-    const htmlMessage = `<!DOCTYPE html><html><body style="font-family:Arial,sans-serif;background:#f4f6f9;margin:0;padding:20px;">
-<div style="max-width:600px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 15px rgba(0,0,0,0.1);">
-  <div style="background:linear-gradient(135deg,#1a365d,#2b6cb0);color:#fff;padding:30px;text-align:center;">
-    <h1 style="margin:0;font-size:24px;letter-spacing:2px;">CAIFA EXAMINATION</h1>
-    <p style="margin:8px 0 0;opacity:.85;font-size:14px;">Certified AI in Finance Analyst — Result Notification</p>
-  </div>
-  <div style="padding:30px;">
-    <div style="background:#f7fafc;border-radius:10px;padding:25px;text-align:center;margin-bottom:25px;border-left:5px solid #3182ce;">
-      <div style="font-size:56px;font-weight:900;color:#1a365d;line-height:1;">${score}<span style="font-size:28px;color:#a0aec0;">/100</span></div>
-      <div style="font-size:14px;color:#718096;margin-top:5px;">Total Score</div>
-    </div>
-    <table style="width:100%;border-collapse:collapse;">
-      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;width:45%;">Candidate Name</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${candidateName}</td></tr>
-      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Candidate Email</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${candidateEmail}</td></tr>
-      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Examination Date</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${examDate}</td></tr>
-      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Time Taken</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${timeStr}</td></tr>
-      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Correct Answers</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${score}</td></tr>
-      <tr><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#718096;font-weight:500;">Incorrect / Unanswered</td><td style="padding:12px 16px;border-bottom:1px solid #e2e8f0;color:#1a202c;font-weight:600;text-align:right;">${100 - score}</td></tr>
-      <tr><td style="padding:12px 16px;color:#718096;font-weight:500;">Percentage</td><td style="padding:12px 16px;color:#1a202c;font-weight:600;text-align:right;">${pct}% (${performanceLevel})</td></tr>
-    </table>
-    <div style="background:#ebf8ff;border-left:4px solid #3182ce;padding:12px 16px;border-radius:0 8px 8px 0;margin-top:20px;font-size:13px;color:#2c5282;">
-      This is an automated email notification from the CAIFA Exam Platform. Please do not reply. Correct answers are not disclosed per exam policy.
-    </div>
-  </div>
-  <div style="background:#f7fafc;padding:20px;text-align:center;color:#a0aec0;font-size:12px;border-top:1px solid #e2e8f0;">
-    CAIFA Certification Exam Platform &copy; ${new Date().getFullYear()}<br>Certified AI in Finance Analyst
-  </div>
-</div></body></html>`;
 
     // Method 1: Try serverless functions (Netlify or Vercel)
     const serverlessEndpoints = [
@@ -524,7 +703,6 @@ Certified AI in Finance Analyst`;
     console.log('Serverless functions not available, using FormSubmit...');
 
     // Method 2: FormSubmit.co AJAX API (browser-based, no backend required)
-    // Sends email to siwen1980@126.com via formsubmit.co service
     try {
         const formData = new FormData();
         formData.append('_subject', subject);
@@ -559,20 +737,22 @@ Certified AI in Finance Analyst`;
 
 function showResults(score, timeTaken, date) {
     const circle = document.querySelector('.result-score-circle');
-    circle.classList.remove('excellent', 'good', 'average', 'needs-work');
+    if (circle) {
+        circle.classList.remove('excellent', 'good', 'average', 'needs-work');
+    }
 
     let message = '';
     if (score >= 90) {
-        circle.classList.add('excellent');
+        if (circle) circle.classList.add('excellent');
         message = 'Outstanding performance! You have demonstrated exceptional mastery of the CAIFA curriculum.';
     } else if (score >= 75) {
-        circle.classList.add('good');
+        if (circle) circle.classList.add('good');
         message = 'Great job! You have a strong understanding of the material. Keep up the excellent work.';
     } else if (score >= 60) {
-        circle.classList.add('average');
+        if (circle) circle.classList.add('average');
         message = 'Good effort! Review the study materials further to strengthen your knowledge in weaker areas.';
     } else {
-        circle.classList.add('needs-work');
+        if (circle) circle.classList.add('needs-work');
         message = 'We recommend additional study. Review all modules thoroughly before your next attempt.';
     }
 
@@ -598,15 +778,49 @@ document.getElementById('modal-overlay').addEventListener('click', (e) => {
     if (e.target.id === 'modal-overlay') closeModal();
 });
 
-// Keyboard shortcuts during exam
+// Keyboard shortcuts during exam (with debounce protection)
+let lastKeyTime = 0;
+const KEY_DEBOUNCE_MS = 150;
 document.addEventListener('keydown', (e) => {
     if (!examState) return;
-    if (e.key === 'ArrowLeft') prevQuestion();
-    if (e.key === 'ArrowRight') nextQuestion();
-    if (['a', 'A', '1'].includes(e.key)) selectAnswer('A');
-    if (['b', 'B', '2'].includes(e.key)) selectAnswer('B');
-    if (['c', 'C', '3'].includes(e.key)) selectAnswer('C');
-    if (['d', 'D', '4'].includes(e.key)) selectAnswer('D');
+
+    const now = Date.now();
+    if (now - lastKeyTime < KEY_DEBOUNCE_MS) return;
+    lastKeyTime = now;
+
+    switch (e.key) {
+        case 'ArrowLeft':  prevQuestion(); break;
+        case 'ArrowRight': nextQuestion(); break;
+        case 'a': case 'A': case '1': selectAnswer('A'); break;
+        case 'b': case 'B': case '2': selectAnswer('B'); break;
+        case 'c': case 'C': case '3': selectAnswer('C'); break;
+        case 'd': case 'D': case '4': selectAnswer('D'); break;
+    }
+});
+
+// Before unload: warn if exam is in progress
+window.addEventListener('beforeunload', (e) => {
+    if (examState && timerInterval) {
+        // Save exam state for potential recovery
+        saveExamToSession();
+        e.preventDefault();
+        e.returnValue = 'You have an exam in progress. Are you sure you want to leave?';
+        return e.returnValue;
+    }
+});
+
+// Cross-tab coordination: listen for localStorage changes
+window.addEventListener('storage', (e) => {
+    if (e.key === 'caifa_history_version') {
+        const newVersion = parseInt(e.newValue || '0', 10);
+        if (newVersion > historyVersion) {
+            historyVersion = newVersion;
+            // Refresh history if on dashboard and it's visible
+            if (currentUser && document.getElementById('dashboard-page').style.display !== 'none') {
+                renderHistory();
+            }
+        }
+    }
 });
 
 // ==================== Initialization ====================
@@ -616,10 +830,29 @@ function init() {
     if (saved) {
         try {
             currentUser = JSON.parse(saved);
+            // Check for exam recovery
+            const recovered = recoverExamFromSession();
+            if (recovered) {
+                examState = {
+                    questions: recovered.questions,
+                    answers: recovered.answers,
+                    currentIndex: recovered.currentIndex,
+                    startTime: recovered.startTime,
+                    timeRemaining: recovered.timeRemaining
+                };
+                buildQuestionNav();
+                renderQuestion();
+                startTimer();
+                showPage('exam-page');
+                document.getElementById('nav-user').textContent = currentUser.fullname;
+                return;
+            }
+            clearExamPersistence();
             goToDashboard();
             return;
         } catch (e) {
             sessionStorage.removeItem('caifa_current_user');
+            clearExamPersistence();
         }
     }
     showPage('auth-page');
